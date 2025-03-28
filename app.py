@@ -7,7 +7,6 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
-from streamlit_drawable_canvas import st_canvas
 
 # アプリのタイトルとデザイン設定
 st.set_page_config(page_title="工場レイアウトシミュレーター", layout="wide")

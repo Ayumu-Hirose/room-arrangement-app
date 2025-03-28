@@ -7,6 +7,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
+from streamlit_drawable_canvas import st_canvas
 
 # アプリのタイトルとデザイン設定
 st.set_page_config(page_title="工場レイアウトシミュレーター", layout="wide")
@@ -63,6 +64,10 @@ if 'show_collision' not in st.session_state:
     st.session_state.show_collision = True
 if 'show_equipment_info' not in st.session_state:
     st.session_state.show_equipment_info = True
+if 'selected_equipment' not in st.session_state:
+    st.session_state.selected_equipment = None
+if 'drag_mode' not in st.session_state:
+    st.session_state.drag_mode = False
 
 # アプリのタイトル
 st.title("工場レイアウトシミュレーター")
@@ -164,6 +169,7 @@ with col2:
         st.checkbox("グリッド表示", value=st.session_state.show_grid, key="show_grid")
         st.checkbox("衝突検出表示", value=st.session_state.show_collision, key="show_collision")
         st.checkbox("設備情報表示", value=st.session_state.show_equipment_info, key="show_equipment_info")
+        st.checkbox("ドラッグモード", value=st.session_state.drag_mode, key="drag_mode", help="設備をクリックして移動できます")
 
     # 設備の追加設定
     with st.expander("設備の追加", expanded=True):
@@ -314,10 +320,10 @@ with col1:
         
         # フォントの設定
         try:
-            font = ImageFont.truetype("arial.ttf", 12)
-            big_font = ImageFont.truetype("arial.ttf", 16)
-        except IOError:
-            # フォントが見つからない場合はデフォルトフォントを使用
+            # フォントサイズを取得するためのダミーフォント
+            font = ImageFont.load_default()
+            big_font = ImageFont.load_default()
+        except Exception:
             font = ImageFont.load_default()
             big_font = ImageFont.load_default()
         
@@ -367,25 +373,97 @@ with col1:
             if st.session_state.show_equipment_info:
                 # 設備番号とラベル
                 label = f"{i+1}: {equipment['label']}"
-                # ラベルのサイズに応じてテキスト表示を調整
-                text_width, text_height = draw.textsize(label, font=font)
+                
+                # テキストサイズの取得 (古いtextsizeメソッドを使わず、代わりに推定サイズを計算)
+                font_size = 12
+                text_width = len(label) * font_size * 0.6  # 文字あたりの幅を推定
+                text_height = font_size
                 
                 # テキストが設備内に収まるか確認
                 if text_width < width_eq - 10 and text_height < length_eq - 10:
-                    draw.text((x_eq - text_width/2, y_eq - text_height/2), label, fill="#000000", font=font)
+                    text_x = x_eq - text_width/2
+                    text_y = y_eq - text_height/2
+                    # テキスト背景を描画して読みやすくする
+                    text_bg = [(text_x-2, text_y-2), (text_x+text_width+2, text_y+text_height+2)]
+                    draw.rectangle(text_bg, fill="#FFFFFFAA")  # 半透明の白背景
+                    draw.text((text_x, text_y), label, fill="#000000")
                 else:
                     # 収まらない場合は番号だけ
-                    draw.text((x_eq - 5, y_eq - 5), str(i+1), fill="#000000", font=font)
+                    draw.text((x_eq - 5, y_eq - 5), str(i+1), fill="#000000")
         
         # 枠線
         draw.rectangle([0, 0, width_px-1, length_px-1], fill=None, outline="#000000", width=2)
         
         return factory_image
     
+    # 設備のドラッグ＆ドロップ処理
+    def handle_click(x, y):
+        if not st.session_state.drag_mode:
+            return
+            
+        # クリック位置をメートル単位に変換
+        x_m = x / scale_factor
+        y_m = y / scale_factor
+        
+        # クリックされた設備を特定
+        for i, equip in enumerate(st.session_state.equipment_list):
+            # 設備の範囲を計算
+            half_width = equip["width"] / 2
+            half_length = equip["length"] / 2
+            
+            # 簡易的な判定（回転は考慮していません）
+            if (abs(x_m - equip["x"]) <= half_width and 
+                abs(y_m - equip["y"]) <= half_length):
+                st.session_state.selected_equipment = i
+                # リロードしてUIを更新
+                st.experimental_rerun()
+                return
+        
+        # 何も選択されていない場合
+        if st.session_state.selected_equipment is not None:
+            # 選択中の設備を移動
+            equip = st.session_state.equipment_list[st.session_state.selected_equipment]
+            equip["x"] = x_m
+            equip["y"] = y_m
+            st.session_state.selected_equipment = None
+            # リロードしてUIを更新
+            st.experimental_rerun()
+    
     # レイアウト図の表示
     st.subheader("工場レイアウト図")
+    
+    # ドラッグモードの説明
+    if st.session_state.drag_mode:
+        st.info("ドラッグモードがオンです。設備をクリックして選択し、別の場所をクリックして移動できます。")
+        if st.session_state.selected_equipment is not None:
+            selected_name = st.session_state.equipment_list[st.session_state.selected_equipment]["label"]
+            st.warning(f"選択中の設備: {selected_name} - 移動先をクリックしてください。")
+    
+    # レイアウト画像を生成
     layout_image = render_layout()
-    st.image(layout_image, use_column_width=True)
+    
+    # 画像のサイズを取得
+    img_width, img_height = layout_image.size
+    
+    # ドラッグ＆ドロップ用のインタラクティブキャンバス
+    if st.session_state.drag_mode:
+        # プレースホルダーを作成して画像を表示
+        image_placeholder = st.empty()
+        image_placeholder.image(layout_image, use_column_width=True)
+        
+        # 画像上でのクリックイベントを処理
+        if st.button("画像をクリック"):
+            st.write("画面上の位置をクリックしてください")
+            
+            # クリックイベントを取得するために、画像上にクリック可能なエリアを重ねる
+            clicked = st.button("画像をクリックしてください")
+            if clicked:
+                # ここでクリック位置を取得 (簡易的な実装)
+                # 実際にはJavaScriptとの連携が必要
+                handle_click(img_width/2, img_height/2)
+    else:
+        # 通常表示（非ドラッグモード）
+        st.image(layout_image, use_column_width=True)
     
     # ダウンロードボタン
     layout_bytes = io.BytesIO()
@@ -428,7 +506,7 @@ with col1:
             eq_index = equipment_to_edit - 1
             selected_eq = st.session_state.equipment_list[eq_index]
             
-            col_edit, col_delete = st.columns(2)
+            col_edit, col_delete, col_move = st.columns(3)
             
             with col_edit:
                 if st.button("選択した設備を編集"):
@@ -439,6 +517,53 @@ with col1:
                 if st.button("選択した設備を削除"):
                     st.session_state.equipment_list.pop(eq_index)
                     st.success("設備を削除しました")
+                    st.experimental_rerun()
+                    
+            with col_move:
+                if st.button("位置を変更"):
+                    st.session_state.selected_equipment = eq_index
+                    st.session_state.drag_mode = True
+                    st.experimental_rerun()
+
+        # ドラッグ操作の代わりになる位置調整
+        if not st.session_state.drag_mode:
+            st.subheader("設備の位置調整")
+            st.write("ドラッグ機能の代わりに、直接座標を入力して設備を移動できます。")
+            
+            col_sel, col_x, col_y = st.columns(3)
+            
+            with col_sel:
+                selected_item = st.selectbox(
+                    "移動する設備", 
+                    range(len(st.session_state.equipment_list)), 
+                    format_func=lambda i: f"{i+1}: {st.session_state.equipment_list[i]['label']}"
+                )
+            
+            if selected_item is not None:
+                eq = st.session_state.equipment_list[selected_item]
+                
+                with col_x:
+                    new_x = st.number_input(
+                        "X位置 (m)", 
+                        0.0, 
+                        st.session_state.factory_width,
+                        eq["x"], 
+                        0.5
+                    )
+                
+                with col_y:
+                    new_y = st.number_input(
+                        "Y位置 (m)", 
+                        0.0, 
+                        st.session_state.factory_length,
+                        eq["y"], 
+                        0.5
+                    )
+                
+                if st.button("位置を更新"):
+                    eq["x"] = new_x
+                    eq["y"] = new_y
+                    st.success("設備の位置を更新しました")
                     st.experimental_rerun()
 
 # 設備編集モーダル（別途実装が必要）
@@ -497,12 +622,17 @@ with st.expander("使い方ガイド"):
        - 「選択した設備を編集」ボタンをクリックして詳細を変更します
        - または「選択した設備を削除」ボタンで削除します
     
-    4. **レイアウトの保存と読み込み**
+    4. **設備の移動**
+       - 「位置を変更」ボタンをクリックして設備を選択します
+       - ドラッグモードがオンになるので、移動先をクリックします
+       - または「設備の位置調整」セクションで座標を直接入力します
+    
+    5. **レイアウトの保存と読み込み**
        - レイアウト名を入力し「レイアウトを保存」をクリックします
        - 保存したレイアウトは「保存済みレイアウト」から選択して読み込めます
        - レイアウトはJSONファイルとしてエクスポート/インポートもできます
     
-    5. **レイアウト図の保存**
+    6. **レイアウト図の保存**
        - 「レイアウト図をダウンロード」ボタンで現在のレイアウトを画像として保存できます
     
     ### 追加機能
@@ -517,7 +647,7 @@ with st.expander("開発者ノート"):
     st.markdown("""
     ### 今後の改善予定機能
     
-    - ドラッグ＆ドロップでの設備移動インターフェース
+    - 完全なドラッグ＆ドロップ機能の実装（JavaScriptとの連携が必要）
     - 3D表示オプション
     - 動線解析ツール
     - 設備間の接続/関係性の定義
